@@ -3,116 +3,79 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import requests
 
-# --------------------------------------------------
-# CONFIGURACIÓN GENERAL
-# --------------------------------------------------
-st.set_page_config(
-    page_title="Exploración interactiva de datos",
-    layout="wide"
-)
+# 1. Configuración inicial
+st.set_page_config(page_title="Explorador de Datos", layout="wide")
 
-st.title("🔍 Exploración interactiva de datos públicos")
-st.write("Análisis y visualización de datos obtenidos desde la API REST de Chile.")
+# 2. Inicializar el estado de la sesión (ESTO ES CLAVE)
+# Si no hacemos esto, el DataFrame se borra al mover un slider o selectbox
+if 'df_final' not in st.session_state:
+    st.session_state.df_final = None
 
-# Inicializar el estado de la sesión para el DataFrame
-if 'df' not in st.session_state:
-    st.session_state.df = None
+st.title("🔍 Exploración de Datos Públicos")
 
-# --------------------------------------------------
-# FUNCIÓN PARA CARGAR DATOS
-# --------------------------------------------------
+# 3. Sidebar
+st.sidebar.header("⚙️ Configuración")
+resource_id = st.sidebar.text_input("resource_id", value="2c44d782-3365-44e3-aefb-2c44d782-3365-44e3-aefb-2c")
+limit = st.sidebar.number_input("Límite", 10, 1000, 50)
+
+# 4. Función de carga
 @st.cache_data
-def cargar_datos_api(resource_id, limit):
-    # Nota: Asegúrate que la URL sea la correcta para registros (action/datastore_search)
-    url = "https://api.datos.gob.cl/api/action/datastore_search"
-    params = {"resource_id": resource_id, "limit": limit}
-    
+def obtener_datos(res_id, lim):
+    # URL correcta para obtener registros en la API de datos.gob.cl
+    url = f"https://api.datos.gob.cl/api/action/datastore_search"
+    params = {"resource_id": res_id, "limit": lim}
     try:
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 200:
-            registros = response.json().get("result", {}).get("records", [])
-            df = pd.DataFrame(registros)
-            # Intentar convertir columnas a números automáticamente
+        r = requests.get(url, params=params)
+        if r.status_code == 200:
+            data = r.json()
+            records = data.get("result", {}).get("records", [])
+            df = pd.DataFrame(records)
+            # Convertir columnas a números si es posible
             return df.apply(pd.to_numeric, errors='ignore')
     except Exception as e:
-        st.error(f"Error de conexión: {e}")
+        st.error(f"Error: {e}")
     return pd.DataFrame()
 
-# --------------------------------------------------
-# SIDEBAR - CONFIGURACIÓN
-# --------------------------------------------------
-st.sidebar.header("⚙️ Configuración")
+# 5. Lógica del Botón
+if st.sidebar.button("Cargar datos"):
+    # Guardamos el resultado en el session_state
+    resultado = obtener_datos(resource_id, limit)
+    if not resultado.empty:
+        st.session_state.df_final = resultado
+        st.success("Datos cargados!")
+    else:
+        st.error("No se encontraron datos.")
 
-resource_id = st.sidebar.text_input(
-    "resource_id (UUID)",
-    value="2c44d782-3365-44e3-aefb-2c" # Ejemplo
-)
+# 6. Renderizado (Fuera del bloque del botón)
+# Esto permite que el gráfico no desaparezca al interactuar
+if st.session_state.df_final is not None:
+    df = st.session_state.df_final
+    
+    st.subheader("📋 Vista previa")
+    st.dataframe(df.head())
 
-limit = st.sidebar.number_input("Límite de registros", 10, 5000, 100)
+    st.subheader("📊 Gráfico")
+    
+    # Filtramos columnas para los selectores
+    columnas = df.columns.tolist()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        eje_x = st.selectbox("Selecciona columna para el eje X", columnas)
+    with col2:
+        top_n = st.slider("Cantidad de registros", 5, 20, 10)
 
-if st.sidebar.button("🚀 Cargar / Actualizar Datos"):
-    with st.spinner('Obteniendo datos...'):
-        nuevo_df = cargar_datos_api(resource_id, limit)
-        if not nuevo_df.empty:
-            st.session_state.df = nuevo_df
-            st.success("¡Datos cargados con éxito!")
-        else:
-            st.error("No se encontraron datos o el ID es incorrecto.")
+    # Procesar datos para el gráfico
+    # Contamos las ocurrencias de la columna seleccionada
+    datos_plot = df[eje_x].value_counts().head(top_n)
 
-# --------------------------------------------------
-# PROCESO DE VISUALIZACIÓN (Solo si hay datos cargados)
-# --------------------------------------------------
-if st.session_state.df is not None:
-    df = st.session_state.df
-
-    # Tabs para organizar la interfaz
-    tab1, tab2 = st.tabs(["📋 Tabla de Datos", "📊 Gráficos Dinámicos"])
-
-    with tab1:
-        st.subheader("Vista previa")
-        st.dataframe(df, use_container_width=True)
-
-    with tab2:
-        st.subheader("Configuración del Gráfico")
-        
-        col1, col2, col3 = st.columns(3)
-
-        # Identificar tipos de columnas
-        cols_todas = df.columns.tolist()
-        cols_num = df.select_dtypes(include=['number']).columns.tolist()
-        
-        with col1:
-            col_x = st.selectbox("Eje X (Categoría)", cols_todas)
-        with col2:
-            # Si no hay numéricas, permitimos contar cualquier columna
-            col_y = st.selectbox("Eje Y (Valor/Medida)", cols_num if cols_num else cols_todas)
-        with col3:
-            metodo = st.radio("Método", ["Contar registros", "Sumar valores (si es numérico)"])
-
-        top_n = st.slider("Mostrar Top N resultados", 5, 50, 10)
-
-        # Procesamiento de datos para el gráfico
-        if metodo == "Contar registros":
-            datos_grafico = df[col_x].value_counts().head(top_n)
-            ylabel = "Cantidad"
-        else:
-            if col_y in cols_num:
-                datos_grafico = df.groupby(col_x)[col_y].sum().sort_values(ascending=False).head(top_n)
-                ylabel = f"Suma de {col_y}"
-            else:
-                st.warning("Selecciona una columna numérica para sumar.")
-                datos_grafico = pd.Series()
-
-        # Renderizado del gráfico
-        if not datos_grafico.empty:
-            fig, ax = plt.subplots(figsize=(10, 5))
-            datos_grafico.plot(kind="bar", ax=ax, color="#1f77b4")
-            ax.set_title(f"Top {top_n} por {col_x}")
-            ax.set_ylabel(ylabel)
-            plt.xticks(rotation=45, ha="right")
-            st.pyplot(fig)
-        else:
-            st.info("Ajusta los parámetros para generar el gráfico.")
-
+    if not datos_plot.empty:
+        fig, ax = plt.subplots()
+        datos_plot.plot(kind="bar", ax=ax)
+        ax.set_title(f"Top {top_n} de {eje_x}")
+        plt.xticks(rotation=45, ha="right")
+        st.pyplot(fig)
+    else:
+        st.warning("No hay datos para mostrar.")
 else:
-    st.info("👈 Presiona el botón en la barra lateral para cargar los datos.")
+    st.info("👈 Haz clic en 'Cargar datos' en el panel de la izquierda.")
