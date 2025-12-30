@@ -1,76 +1,74 @@
 import streamlit as st
-import pandas as pd
 import matplotlib.pyplot as plt
-import requests
 
-# --- 1. FUNCIÓN DE LIMPIEZA (Basada en tu analysis.py) ---
-def preparar_datos(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    if "_id" in df.columns:
-        df = df.drop(columns=["_id"])
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            df[col] = pd.to_numeric(df[col], errors="ignore")
-    return df
+from data_api import obtener_datos
+from analysis import preparar_datos
 
-# --- 2. CONFIGURACIÓN ---
-st.set_page_config(page_title="DataViz Salud Chile", layout="wide")
+DEFAULT_RESOURCE_ID = "2c44d782-3365-44e3-aefb-2c8b8363a1bc"
 
-if 'df_datos' not in st.session_state:
-    st.session_state.df_datos = None
+st.set_page_config(page_title="DataViz - datos.gob.cl", layout="wide")
+st.title("📊 DataViz con datos.gob.cl (API REST + Streamlit)")
+st.write("Consume datos desde **datos.gob.cl** vía **API GET (CKAN DataStore)**, analiza con pandas y visualiza con matplotlib.")
 
-st.title("🏥 Exploración de Establecimientos de Salud")
+with st.sidebar:
+    st.header("🔧 Configuración")
+    resource_id = st.text_input(
+        "resource_id (UUID del recurso con DataStore)",
+        value=DEFAULT_RESOURCE_ID,
+        help="Este valor viene precargado con un recurso público de datos.gob.cl. Puedes reemplazarlo por otro resource_id.",
+    )
+    limit = st.number_input("Límite de registros", min_value=10, max_value=50000, value=1000, step=10)
+    load_btn = st.button("Cargar datos")
 
-# --- 3. CARGA DE DATOS ---
-st.sidebar.header("⚙️ Configuración")
-res_id = st.sidebar.text_input("resource_id", value="2c44d782-3365-44e3-aefb-2c44d782-3365-44e3-aefb-2c")
-limit = st.sidebar.number_input("Registros", 10, 1000, 500)
+st.info("📌 El resource_id está precargado con un recurso de **datos.gob.cl**. Puedes cambiarlo si usas otro dataset con DataStore habilitado.")
 
-if st.sidebar.button("🚀 Cargar Datos"):
-    url = "https://api.datos.gob.cl/api/action/datastore_search"
-    params = {"resource_id": res_id, "limit": limit}
+if load_btn:
+    if not resource_id.strip():
+        st.error("Ingresa un resource_id válido.")
+        st.stop()
+
     try:
-        r = requests.get(url, params=params)
-        if r.status_code == 200:
-            st.session_state.df_datos = preparar_datos(pd.DataFrame(r.json()["result"]["records"]))
-            st.sidebar.success("Datos listos.")
-    except:
-        st.sidebar.error("Error de conexión.")
+        df = obtener_datos(resource_id=resource_id.strip(), limit=int(limit))
+        df = preparar_datos(df)
+    except Exception as e:
+        st.error(f"No se pudieron cargar los datos: {e}")
+        st.stop()
 
-# --- 4. FILTROS Y GRÁFICO (PERSISTENTES) ---
-if st.session_state.df_datos is not None:
-    df = st.session_state.df_datos.copy()
+    st.success(f"Datos cargados: {len(df):,} registros | {len(df.columns)} columnas")
 
-    # --- NUEVO: FILTRO POR REGIÓN ---
-    st.subheader("📍 Filtrar por Ubicación")
-    regiones = ["Todas"] + sorted(df["RegionGlosa"].unique().tolist())
-    region_sel = st.selectbox("Selecciona una Región para enfocar el análisis:", regiones)
-    
-    if region_sel != "Todas":
-        df = df[df["RegionGlosa"] == region_sel]
+    st.subheader("🔎 Exploración interactiva")
+    col_filter = st.selectbox("Selecciona una columna para filtrar (opcional)", ["(sin filtro)"] + list(df.columns))
 
-    st.divider()
+    df_view = df
+    if col_filter != "(sin filtro)":
+        unique_vals = df[col_filter].dropna().unique()
+        if len(unique_vals) <= 200:
+            chosen = st.multiselect(f"Filtrar {col_filter} por:", options=sorted(unique_vals.astype(str)))
+            if chosen:
+                df_view = df[df[col_filter].astype(str).isin(chosen)]
+        else:
+            st.warning("Demasiados valores únicos para filtro por lista. Usa búsqueda en la tabla.")
 
-    # --- CONFIGURACIÓN DEL GRÁFICO ---
-    col1, col2 = st.columns(2)
-    with col1:
-        # Selector de columna (EstablecimientoGlosa, TipoPertenencia, etc.)
-        col_graficar = st.selectbox("¿Qué quieres contar?", df.columns.tolist(), index=df.columns.get_loc("EstablecimientoGlosa") if "EstablecimientoGlosa" in df.columns else 0)
-    with col2:
-        top_n = st.slider("Mostrar los primeros N:", 5, 20, 10)
+    st.subheader("📈 Gráfico (elige columna numérica)")
+    numeric_cols = [c for c in df_view.columns if str(df_view[c].dtype) in ("int64", "float64", "int32", "float32")]
+    if numeric_cols:
+        num_col = st.selectbox("Columna numérica", numeric_cols)
+        top_n = st.slider("Top N (por valor)", 5, 50, 10)
 
-    # Lógica del Gráfico (Conteo de frecuencias)
-    datos_conteo = df[col_graficar].value_counts().head(top_n)
+        label_cols = [c for c in df_view.columns if df_view[c].dtype == object]
+        label_col = st.selectbox("Columna etiqueta (opcional)", ["(índice)"] + label_cols)
 
-    if not datos_conteo.empty:
-        fig, ax = plt.subplots(figsize=(10, 5))
-        # Gráfico horizontal para que los nombres de hospitales se lean bien
-        datos_conteo.sort_values().plot(kind="barh", ax=ax, color="#2ecc71")
-        ax.set_title(f"Distribución: {col_graficar} (Filtro: {region_sel})")
-        ax.set_xlabel("Cantidad")
+        plot_df = df_view.sort_values(num_col, ascending=False).head(top_n)
+
+        fig, ax = plt.subplots()
+        y_labels = plot_df.index.astype(str) if label_col == "(índice)" else plot_df[label_col].astype(str)
+        ax.barh(y_labels, plot_df[num_col])
+        ax.invert_yaxis()
+        ax.set_xlabel(num_col)
+        ax.set_ylabel(label_col if label_col != "(índice)" else "Índice")
         st.pyplot(fig)
     else:
-        st.warning("No hay datos para esta selección.")
+        st.warning("No se detectaron columnas numéricas en el dataset cargado para graficar.")
 
-    # Tabla detallada
-    with st.expander
+    st.subheader("🧾 Tabla de datos")
+    st.dataframe(df_view, use_container_width=True)
