@@ -3,53 +3,57 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import requests
 
-st.set_page_config(page_title="DataViz persistente", layout="wide")
+# 1. Configuración de página
+st.set_page_config(page_title="DataViz Establecimientos", layout="wide")
 
-# 1. INICIALIZAR LA MEMORIA
-# Si 'df_datos' no existe en la sesión, la creamos vacía
+# 2. INICIALIZAR LA MEMORIA (Esto evita que se borre al filtrar)
 if 'df_datos' not in st.session_state:
     st.session_state.df_datos = None
 
-st.title("📊 DataViz con datos.gob.cl")
+st.title("📊 Visualización de Datos de Salud")
 
-# 2. BARRA LATERAL
+# 3. BARRA LATERAL PARA CARGA
 st.sidebar.header("⚙️ Configuración")
-resource_id = st.sidebar.text_input("resource_id", value="2c44d782-3365-44e3-aefb-2c44d782-3365-44e3-aefb-2c")
-limit = st.sidebar.number_input("Límite", 10, 1000, 100)
+resource_id = st.sidebar.text_input("ID del Recurso", value="2c44d782-3365-44e3-aefb-2c44d782-3365-44e3-aefb-2c")
+limit = st.sidebar.number_input("Registros", 10, 1000, 100)
 
-if st.sidebar.button("Cargar datos"):
+if st.sidebar.button("🚀 Cargar Datos"):
     url = "https://api.datos.gob.cl/api/action/datastore_search"
     params = {"resource_id": resource_id, "limit": limit}
     try:
         r = requests.get(url, params=params)
         if r.status_code == 200:
             registros = r.json().get("result", {}).get("records", [])
-            # GUARDAMOS EN LA MEMORIA DE LA SESIÓN
-            st.session_state.df_datos = pd.DataFrame(registros).apply(pd.to_numeric, errors='ignore')
-            st.success("Datos cargados correctamente")
+            # Guardamos el DataFrame en session_state
+            df = pd.DataFrame(registros)
+            st.session_state.df_datos = df.apply(pd.to_numeric, errors='ignore')
+            st.sidebar.success("¡Datos cargados con éxito!")
         else:
-            st.error("Error al obtener datos")
+            st.sidebar.error("No se pudo conectar con la API")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.sidebar.error(f"Error: {e}")
 
-# 3. CUERPO PRINCIPAL (FUERA DEL BOTÓN)
-# Solo se ejecuta si hay datos guardados en la memoria (session_state)
+# 4. CUERPO PRINCIPAL (FUERA DEL BOTÓN)
+# Solo se muestra si ya cargamos datos antes
 if st.session_state.df_datos is not None:
     df = st.session_state.df_datos
     
-    st.subheader("📈 Gráfico dinámico")
+    st.subheader("🔍 Filtros y Gráfico")
     
-    # Estos selectores ahora NO borrarán los datos al usarlos
-    columnas = df.columns.tolist()
-    col_seleccionada = st.selectbox("Selecciona columna para el eje X", columnas)
-    top_n = st.slider("Top N registros", 5, 20, 10)
+    col1, col2 = st.columns(2)
+    with col1:
+        # Ahora al cambiar esto, el script se reinicia pero los datos siguen en st.session_state
+        col_seleccionada = st.selectbox("Selecciona columna para el eje X", df.columns.tolist())
+    with col2:
+        top_n = st.slider("Ver Top N resultados", 5, 20, 10)
 
-    # Procesamiento y Gráfico
-    datos_plot = df[col_seleccionada].value_counts().head(top_n)
-    
-    if not datos_plot.empty:
+    # Procesamiento de datos para el gráfico
+    conteo = df[col_seleccionada].value_counts().head(top_n)
+
+    if not conteo.empty:
         fig, ax = plt.subplots(figsize=(10, 4))
-        datos_plot.plot(kind="bar", ax=ax, color="skyblue")
+        conteo.plot(kind="bar", ax=ax, color="#4CB391")
+        ax.set_title(f"Distribución por {col_seleccionada}")
         plt.xticks(rotation=45, ha="right")
         st.pyplot(fig)
     
@@ -57,5 +61,4 @@ if st.session_state.df_datos is not None:
     st.subheader("📋 Tabla de datos")
     st.dataframe(df)
 else:
-    # Este es el mensaje que ves en tu imagen 2
-    st.info("👈 Configure los parámetros y presione 'Cargar datos' para comenzar.")
+    st.info("👈 Ingresa los datos y presiona 'Cargar Datos' en la izquierda para empezar.")
