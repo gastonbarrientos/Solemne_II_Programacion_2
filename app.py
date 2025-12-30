@@ -3,18 +3,28 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import requests
 
-# 1. Configuración de página
-st.set_page_config(page_title="DataViz Establecimientos", layout="wide")
+# 1. PEGA AQUÍ LA FUNCIÓN DE TU ARCHIVO ANALYSIS.PY
+def preparar_datos(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    if "_id" in df.columns:
+        df = df.drop(columns=["_id"])
+    for col in df.columns:
+        if df[col].dtype == "object":
+            df[col] = pd.to_numeric(df[col], errors="ignore")
+    return df
 
-# 2. INICIALIZAR LA MEMORIA (Esto evita que se borre al filtrar)
-if 'df_datos' not in st.session_state:
-    st.session_state.df_datos = None
+# 2. CONFIGURACIÓN DE STREAMLIT
+st.set_page_config(page_title="DataViz", layout="wide")
 
-st.title("📊 Visualización de Datos de Salud")
+# Inicializar memoria (Esto evita que se borre al filtrar)
+if 'df_final' not in st.session_state:
+    st.session_state.df_final = None
 
-# 3. BARRA LATERAL PARA CARGA
-st.sidebar.header("⚙️ Configuración")
-resource_id = st.sidebar.text_input("ID del Recurso", value="2c44d782-3365-44e3-aefb-2c44d782-3365-44e3-aefb-2c")
+st.title("📊 DataViz con datos.gob.cl")
+
+# 3. SIDEBAR (Configuración y Carga)
+st.sidebar.header("Configuración")
+resource_id = st.sidebar.text_input("resource_id", value="2c44d782-3365-44e3-aefb-2c44d782-3365-44e3-aefb-2c")
 limit = st.sidebar.number_input("Registros", 10, 1000, 100)
 
 if st.sidebar.button("🚀 Cargar Datos"):
@@ -23,42 +33,27 @@ if st.sidebar.button("🚀 Cargar Datos"):
     try:
         r = requests.get(url, params=params)
         if r.status_code == 200:
-            registros = r.json().get("result", {}).get("records", [])
-            # Guardamos el DataFrame en session_state
-            df = pd.DataFrame(registros)
-            st.session_state.df_datos = df.apply(pd.to_numeric, errors='ignore')
-            st.sidebar.success("¡Datos cargados con éxito!")
-        else:
-            st.sidebar.error("No se pudo conectar con la API")
-    except Exception as e:
-        st.sidebar.error(f"Error: {e}")
+            raw_records = r.json()["result"]["records"]
+            # Guardamos los datos limpios en la memoria global
+            st.session_state.df_final = preparar_datos(pd.DataFrame(raw_records))
+            st.sidebar.success("¡Datos cargados!")
+    except:
+        st.sidebar.error("Error de conexión")
 
-# 4. CUERPO PRINCIPAL (FUERA DEL BOTÓN)
-# Solo se muestra si ya cargamos datos antes
-if st.session_state.df_datos is not None:
-    df = st.session_state.df_datos
+# 4. VISUALIZACIÓN (DEBE IR FUERA DEL IF DEL BOTÓN)
+if st.session_state.df_final is not None:
+    df = st.session_state.df_final
     
-    st.subheader("🔍 Filtros y Gráfico")
+    # Aquí es donde el usuario elige la columna (como EstablecimientoGlosa)
+    # Al estar fuera del botón, Streamlit no lo borra al cambiar la opción
+    col_x = st.selectbox("Selecciona columna para graficar", df.columns.tolist())
     
-    col1, col2 = st.columns(2)
-    with col1:
-        # Ahora al cambiar esto, el script se reinicia pero los datos siguen en st.session_state
-        col_seleccionada = st.selectbox("Selecciona columna para el eje X", df.columns.tolist())
-    with col2:
-        top_n = st.slider("Ver Top N resultados", 5, 20, 10)
-
-    # Procesamiento de datos para el gráfico
-    conteo = df[col_seleccionada].value_counts().head(top_n)
-
-    if not conteo.empty:
-        fig, ax = plt.subplots(figsize=(10, 4))
-        conteo.plot(kind="bar", ax=ax, color="#4CB391")
-        ax.set_title(f"Distribución por {col_seleccionada}")
-        plt.xticks(rotation=45, ha="right")
-        st.pyplot(fig)
+    # Lógica del gráfico
+    conteo = df[col_x].value_counts().head(10)
+    fig, ax = plt.subplots()
+    conteo.plot(kind="bar", ax=ax)
+    st.pyplot(fig)
     
-    st.write("---")
-    st.subheader("📋 Tabla de datos")
     st.dataframe(df)
 else:
-    st.info("👈 Ingresa los datos y presiona 'Cargar Datos' en la izquierda para empezar.")
+    st.info("👈 Presiona 'Cargar Datos' para comenzar.")
