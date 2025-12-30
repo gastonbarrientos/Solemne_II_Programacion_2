@@ -3,79 +3,73 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import requests
 
-# 1. Configuración inicial
-st.set_page_config(page_title="Explorador de Datos", layout="wide")
+# 1. Configuración de página
+st.set_page_config(page_title="DataViz con datos.gob.cl", layout="wide")
 
-# 2. Inicializar el estado de la sesión (ESTO ES CLAVE)
-# Si no hacemos esto, el DataFrame se borra al mover un slider o selectbox
-if 'df_final' not in st.session_state:
-    st.session_state.df_final = None
+# 2. Inicializar el estado de la sesión (Para que los datos no se borren)
+if 'df' not in st.session_state:
+    st.session_state.df = None
 
-st.title("🔍 Exploración de Datos Públicos")
+st.title("📊 DataViz con datos.gob.cl (API REST + Streamlit)")
 
-# 3. Sidebar
+# --------------------------------------------------
+# SIDEBAR - CONFIGURACIÓN
+# --------------------------------------------------
 st.sidebar.header("⚙️ Configuración")
 resource_id = st.sidebar.text_input("resource_id", value="2c44d782-3365-44e3-aefb-2c44d782-3365-44e3-aefb-2c")
-limit = st.sidebar.number_input("Límite", 10, 1000, 50)
+limit = st.sidebar.number_input("Límite de registros", 10, 1000, 100)
 
-# 4. Función de carga
-@st.cache_data
-def obtener_datos(res_id, lim):
-    # URL correcta para obtener registros en la API de datos.gob.cl
-    url = f"https://api.datos.gob.cl/api/action/datastore_search"
-    params = {"resource_id": res_id, "limit": lim}
-    try:
-        r = requests.get(url, params=params)
-        if r.status_code == 200:
-            data = r.json()
-            records = data.get("result", {}).get("records", [])
-            df = pd.DataFrame(records)
-            # Convertir columnas a números si es posible
-            return df.apply(pd.to_numeric, errors='ignore')
-    except Exception as e:
-        st.error(f"Error: {e}")
-    return pd.DataFrame()
-
-# 5. Lógica del Botón
+# Al presionar el botón, guardamos los datos en session_state
 if st.sidebar.button("Cargar datos"):
-    # Guardamos el resultado en el session_state
-    resultado = obtener_datos(resource_id, limit)
-    if not resultado.empty:
-        st.session_state.df_final = resultado
-        st.success("Datos cargados!")
-    else:
-        st.error("No se encontraron datos.")
+    url = "https://api.datos.gob.cl/api/action/datastore_search"
+    params = {"resource_id": resource_id, "limit": limit}
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            registros = response.json().get("result", {}).get("records", [])
+            df_nuevo = pd.DataFrame(registros)
+            # Intentar convertir columnas numéricas
+            st.session_state.df = df_nuevo.apply(pd.to_numeric, errors='ignore')
+            st.sidebar.success("¡Datos cargados!")
+        else:
+            st.sidebar.error("Error al conectar con la API")
+    except Exception as e:
+        st.sidebar.error(f"Error: {e}")
 
-# 6. Renderizado (Fuera del bloque del botón)
-# Esto permite que el gráfico no desaparezca al interactuar
-if st.session_state.df_final is not None:
-    df = st.session_state.df_final
-    
-    st.subheader("📋 Vista previa")
-    st.dataframe(df.head())
+# --------------------------------------------------
+# CUERPO PRINCIPAL (Fuera del bloque del botón)
+# --------------------------------------------------
 
-    st.subheader("📊 Gráfico")
+# Solo mostramos esto si el dataframe ya existe en la sesión
+if st.session_state.df is not None:
+    df = st.session_state.df
+
+    # --- SECCIÓN DE FILTROS Y GRÁFICO ---
+    st.subheader("📈 Gráfico (elige columna)")
     
-    # Filtramos columnas para los selectores
     columnas = df.columns.tolist()
     
     col1, col2 = st.columns(2)
     with col1:
-        eje_x = st.selectbox("Selecciona columna para el eje X", columnas)
+        # Este selector ahora no borrará nada porque df está en session_state
+        col_seleccionada = st.selectbox("Selecciona columna para graficar", columnas)
+    
     with col2:
-        top_n = st.slider("Cantidad de registros", 5, 20, 10)
+        top_n = st.slider("Top N (por valor)", 1, 20, 10)
 
-    # Procesar datos para el gráfico
-    # Contamos las ocurrencias de la columna seleccionada
-    datos_plot = df[eje_x].value_counts().head(top_n)
+    # Procesar datos
+    datos_grafico = df[col_seleccionada].value_counts().head(top_n)
 
-    if not datos_plot.empty:
-        fig, ax = plt.subplots()
-        datos_plot.plot(kind="bar", ax=ax)
-        ax.set_title(f"Top {top_n} de {eje_x}")
+    if not datos_grafico.empty:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        datos_grafico.plot(kind="bar", ax=ax, color="skyblue")
+        ax.set_title(f"Distribución de {col_seleccionada}")
         plt.xticks(rotation=45, ha="right")
         st.pyplot(fig)
-    else:
-        st.warning("No hay datos para mostrar.")
+    
+    st.divider()
+    st.subheader("📋 Tabla de datos completa")
+    st.dataframe(df)
+
 else:
-    st.info("👈 Haz clic en 'Cargar datos' en el panel de la izquierda.")
+    st.info("👈 Configura el resource_id y presiona 'Cargar datos' en el panel lateral.")
