@@ -12,31 +12,31 @@ st.set_page_config(
 )
 
 st.title("🔍 Exploración interactiva de datos públicos")
-st.write(
-    "Aplicación desarrollada en Python y Streamlit para el análisis y "
-    "visualización de datos obtenidos desde una API REST pública del Gobierno de Chile."
-)
+st.write("Análisis y visualización de datos obtenidos desde la API REST de Chile.")
+
+# Inicializar el estado de la sesión para el DataFrame
+if 'df' not in st.session_state:
+    st.session_state.df = None
 
 # --------------------------------------------------
-# FUNCIÓN PARA CARGAR DATOS DESDE LA API
+# FUNCIÓN PARA CARGAR DATOS
 # --------------------------------------------------
 @st.cache_data
-def cargar_datos(resource_id, limit):
-    url = "https://api.datos.gob.cl/datastreams/metadata.json"
-    params = {
-        "resource_id": resource_id,
-        "limit": limit
-    }
-
-    response = requests.get(url, params=params)
-
-    if response.status_code != 200:
-        return pd.DataFrame()
-
-    json_data = response.json()
-    registros = json_data.get("result", {}).get("records", [])
-
-    return pd.DataFrame(registros)
+def cargar_datos_api(resource_id, limit):
+    # Nota: Asegúrate que la URL sea la correcta para registros (action/datastore_search)
+    url = "https://api.datos.gob.cl/api/action/datastore_search"
+    params = {"resource_id": resource_id, "limit": limit}
+    
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            registros = response.json().get("result", {}).get("records", [])
+            df = pd.DataFrame(registros)
+            # Intentar convertir columnas a números automáticamente
+            return df.apply(pd.to_numeric, errors='ignore')
+    except Exception as e:
+        st.error(f"Error de conexión: {e}")
+    return pd.DataFrame()
 
 # --------------------------------------------------
 # SIDEBAR - CONFIGURACIÓN
@@ -44,107 +44,75 @@ def cargar_datos(resource_id, limit):
 st.sidebar.header("⚙️ Configuración")
 
 resource_id = st.sidebar.text_input(
-    "resource_id (UUID del recurso con DataStore)",
-    value="2c44d782-3365-44e3-aefb-2c"
+    "resource_id (UUID)",
+    value="2c44d782-3365-44e3-aefb-2c" # Ejemplo
 )
 
-limit = st.sidebar.number_input(
-    "Límite de registros",
-    min_value=10,
-    max_value=1000,
-    value=50,
-    step=10
-)
+limit = st.sidebar.number_input("Límite de registros", 10, 5000, 100)
 
-btn_cargar = st.sidebar.button("Cargar datos")
+if st.sidebar.button("🚀 Cargar / Actualizar Datos"):
+    with st.spinner('Obteniendo datos...'):
+        nuevo_df = cargar_datos_api(resource_id, limit)
+        if not nuevo_df.empty:
+            st.session_state.df = nuevo_df
+            st.success("¡Datos cargados con éxito!")
+        else:
+            st.error("No se encontraron datos o el ID es incorrecto.")
 
 # --------------------------------------------------
-# PROCESO PRINCIPAL
+# PROCESO DE VISUALIZACIÓN (Solo si hay datos cargados)
 # --------------------------------------------------
-if btn_cargar:
+if st.session_state.df is not None:
+    df = st.session_state.df
 
-    df = cargar_datos(resource_id, limit)
+    # Tabs para organizar la interfaz
+    tab1, tab2 = st.tabs(["📋 Tabla de Datos", "📊 Gráficos Dinámicos"])
 
-    if df.empty:
-        st.error("❌ No se pudieron cargar datos desde la API.")
-        st.stop()
+    with tab1:
+        st.subheader("Vista previa")
+        st.dataframe(df, use_container_width=True)
 
-    # Mostrar datos
-    st.subheader("📋 Vista previa de los datos")
-    st.dataframe(df)
+    with tab2:
+        st.subheader("Configuración del Gráfico")
+        
+        col1, col2, col3 = st.columns(3)
 
-    # --------------------------------------------------
-    # SECCIÓN DE GRÁFICOS
-    # --------------------------------------------------
-    st.subheader("📊 Visualización de datos")
+        # Identificar tipos de columnas
+        cols_todas = df.columns.tolist()
+        cols_num = df.select_dtypes(include=['number']).columns.tolist()
+        
+        with col1:
+            col_x = st.selectbox("Eje X (Categoría)", cols_todas)
+        with col2:
+            # Si no hay numéricas, permitimos contar cualquier columna
+            col_y = st.selectbox("Eje Y (Valor/Medida)", cols_num if cols_num else cols_todas)
+        with col3:
+            metodo = st.radio("Método", ["Contar registros", "Sumar valores (si es numérico)"])
 
-    # Columnas válidas
-    columnas_numericas = df.select_dtypes(include="number").columns.tolist()
-    columnas_categoricas = df.select_dtypes(exclude="number").columns.tolist()
+        top_n = st.slider("Mostrar Top N resultados", 5, 50, 10)
 
-    if not columnas_numericas:
-        st.warning("No existen columnas numéricas disponibles para graficar.")
-        st.stop()
+        # Procesamiento de datos para el gráfico
+        if metodo == "Contar registros":
+            datos_grafico = df[col_x].value_counts().head(top_n)
+            ylabel = "Cantidad"
+        else:
+            if col_y in cols_num:
+                datos_grafico = df.groupby(col_x)[col_y].sum().sort_values(ascending=False).head(top_n)
+                ylabel = f"Suma de {col_y}"
+            else:
+                st.warning("Selecciona una columna numérica para sumar.")
+                datos_grafico = pd.Series()
 
-    # Selector columna numérica
-    col_numerica = st.selectbox(
-        "Columna numérica",
-        columnas_numericas
-    )
-
-    # Opción de usar columna categórica
-    usar_etiqueta = st.checkbox("Usar columna categórica como etiqueta")
-
-    col_etiqueta = None
-    if usar_etiqueta:
-        col_etiqueta = st.selectbox(
-            "Columna categórica",
-            columnas_categoricas
-        )
-
-    top_n = st.slider(
-        "Top N (por valor)",
-        min_value=1,
-        max_value=20,
-        value=10
-    )
-
-    # --------------------------------------------------
-    # PROCESAMIENTO SEGURO
-    # --------------------------------------------------
-    if col_etiqueta:
-        datos = (
-            df.groupby(col_etiqueta)[col_numerica]
-            .count()
-            .sort_values(ascending=False)
-            .head(top_n)
-        )
-        titulo = f"Distribución por {col_etiqueta}"
-        xlabel = col_etiqueta
-        ylabel = "Cantidad de registros"
-    else:
-        datos = (
-            df[col_numerica]
-            .value_counts()
-            .head(top_n)
-        )
-        titulo = f"Distribución de {col_numerica}"
-        xlabel = col_numerica
-        ylabel = "Cantidad"
-
-    # --------------------------------------------------
-    # GRÁFICO
-    # --------------------------------------------------
-    if datos.empty:
-        st.warning("No hay datos suficientes para generar el gráfico.")
-    else:
-        fig, ax = plt.subplots()
-        datos.plot(kind="bar", ax=ax)
-        ax.set_title(titulo)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        plt.xticks(rotation=45, ha="right")
-        st.pyplot(fig)
+        # Renderizado del gráfico
+        if not datos_grafico.empty:
+            fig, ax = plt.subplots(figsize=(10, 5))
+            datos_grafico.plot(kind="bar", ax=ax, color="#1f77b4")
+            ax.set_title(f"Top {top_n} por {col_x}")
+            ax.set_ylabel(ylabel)
+            plt.xticks(rotation=45, ha="right")
+            st.pyplot(fig)
+        else:
+            st.info("Ajusta los parámetros para generar el gráfico.")
 
 else:
-    st.info("👈 Configure los parámetros y presione **Cargar datos** para comenzar.")
+    st.info("👈 Presiona el botón en la barra lateral para cargar los datos.")
