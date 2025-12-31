@@ -1,6 +1,5 @@
 import streamlit as st
 import matplotlib.pyplot as plt
-
 from data_api import obtener_datos
 from analysis import preparar_datos
 
