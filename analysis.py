@@ -1,5 +1,6 @@
 import pandas as pd
 
+
 def preparar_datos(df: pd.DataFrame) -> pd.DataFrame:
     """
     Limpieza general:
@@ -12,7 +13,7 @@ def preparar_datos(df: pd.DataFrame) -> pd.DataFrame:
         df = df.drop(columns=["_id"])
 
     for col in df.columns:
-        if df[col].dtype == 'object':
+        if df[col].dtype == object:
             df[col] = pd.to_numeric(df[col], errors="ignore")
 
     return df
