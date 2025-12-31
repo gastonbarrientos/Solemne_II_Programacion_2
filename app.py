@@ -1,110 +1,94 @@
 import streamlit as st
-import matplotlib.pyplot as plt
 import pandas as pd
 
-# Nota: Asegúrate de que estos archivos existan en tu carpeta
+# Importación de tus módulos locales
 from data_api import obtener_datos
 from analysis import preparar_datos
 
 DEFAULT_RESOURCE_ID = "2c44d782-3365-44e3-aefb-2c8b8363a1bc"
 
-# 1. Configuración de la página
-st.set_page_config(page_title="DataViz - datos.gob.cl", layout="wide")
-st.title("📊 DataViz con datos.gob.cl (API REST + Streamlit)")
-st.write("Consume datos desde **datos.gob.cl** vía **API GET (CKAN DataStore)**, analiza con pandas y visualiza de forma interactiva.")
+# 1. FUNCIÓN CON CACHÉ
+# Esto guarda el resultado en el disco/memoria RAM. 
+# Si usas el mismo ID y Límite, no vuelve a descargar nada de la API.
+@st.cache_data(show_spinner="Consultando API de datos.gob.cl...")
+def cargar_y_procesar(res_id, lim):
+    raw_df = obtener_datos(resource_id=res_id, limit=lim)
+    processed_df = preparar_datos(raw_df)
+    return processed_df
 
-# 2. Sidebar para configuración
+st.set_page_config(page_title="DataViz - datos.gob.cl", layout="wide")
+st.title("📊 DataViz con Caché y Persistencia")
+
+# 2. INICIALIZAR SESSION STATE
+if 'df' not in st.session_state:
+    st.session_state.df = None
+
 with st.sidebar:
     st.header("🔧 Configuración")
-    resource_id = st.text_input(
-        "resource_id (UUID del recurso)",
-        value=DEFAULT_RESOURCE_ID,
-        help="Este valor viene precargado con un recurso público de datos.gob.cl.",
-    )
-    limit = st.number_input("Límite de registros", min_value=10, max_value=50000, value=1000, step=10)
-    load_btn = st.button("Cargar datos", use_container_width=True)
+    resource_id = st.text_input("resource_id (UUID)", value=DEFAULT_RESOURCE_ID)
+    limit = st.number_input("Límite de registros", min_value=10, value=1000)
+    
+    if st.button("Cargar / Actualizar datos", use_container_width=True):
+        try:
+            # Llamamos a la función con caché
+            df_result = cargar_y_procesar(resource_id.strip(), int(limit))
+            st.session_state.df = df_result
+            st.success("¡Datos listos!")
+        except Exception as e:
+            st.error(f"Error: {e}")
 
-st.info("📌 El resource_id está precargado. Puedes cambiarlo por cualquier otro dataset de la plataforma que tenga DataStore habilitado.")
+st.info("📌 El resource_id está precargado. Gracias al Caché, si cambias de gráfico no habrá esperas.")
 
-# 3. Lógica principal al presionar el botón
-if load_btn:
-    if not resource_id.strip():
-        st.error("Ingresa un resource_id válido.")
-        st.stop()
+# 3. RENDERIZADO DE LA INTERFAZ
+if st.session_state.df is not None:
+    df = st.session_state.df
 
-    try:
-        # Carga y limpieza
-        df = obtener_datos(resource_id=resource_id.strip(), limit=int(limit))
-        df = preparar_datos(df)
-        st.success(f"Datos cargados: {len(df):,} registros | {len(df.columns)} columnas")
-    except Exception as e:
-        st.error(f"No se pudieron cargar los datos: {e}")
-        st.stop()
-
-    # --- SECCIÓN 1: EXPLORACIÓN Y FILTROS ---
-    st.subheader("🔎 Exploración interactiva")
-    col_filter = st.selectbox("Selecciona una columna para filtrar (opcional)", ["(sin filtro)"] + list(df.columns))
-
+    # --- Filtros Dinámicos ---
+    st.subheader("🔎 Filtros")
+    col_to_filter = st.selectbox("Columna para filtrar:", ["(Sin filtro)"] + list(df.columns))
+    
     df_view = df
-    if col_filter != "(sin filtro)":
-        unique_vals = df[col_filter].dropna().unique()
-        if len(unique_vals) <= 200:
-            chosen = st.multiselect(f"Filtrar {col_filter} por:", options=sorted(unique_vals.astype(str)))
-            if chosen:
-                df_view = df[df[col_filter].astype(str).isin(chosen)]
+    if col_to_filter != "(Sin filtro)":
+        opciones = sorted(df[col_to_filter].astype(str).unique())
+        seleccion = st.multiselect("Selecciona valores:", opciones)
+        if seleccion:
+            df_view = df[df[col_to_filter].astype(str).isin(seleccion)]
+
+    # --- Gráficos (Ya no se borran al cambiar) ---
+    st.divider()
+    col_chart_1, col_chart_2 = st.columns([1, 3])
+    
+    with col_chart_1:
+        st.subheader("📈 Ajustes")
+        tipo = st.radio("Tipo de gráfico:", ["Barras", "Líneas", "Área"])
+        
+        num_cols = df_view.select_dtypes(include=['number']).columns.tolist()
+        cat_cols = df_view.select_dtypes(include=['object']).columns.tolist()
+
+        if num_cols:
+            eje_y = st.selectbox("Eje Y (Numérico):", num_cols)
+            eje_x = st.selectbox("Eje X (Categoría):", ["(Índice)"] + cat_cols)
+            top_n = st.slider("Top N:", 5, 100, 20)
         else:
-            st.warning("Demasiados valores únicos para mostrar en lista. Mostrando todos.")
+            st.warning("No hay columnas numéricas.")
+            eje_y = None
 
-    # --- SECCIÓN 2: GRÁFICOS INTERACTIVOS ---
+    with col_chart_2:
+        if eje_y:
+            df_plot = df_view.nlargest(top_n, eje_y)
+            if eje_x != "(Índice)":
+                df_plot = df_plot.set_index(eje_x)
+            
+            if tipo == "Barras":
+                st.bar_chart(df_plot[eje_y])
+            elif tipo == "Líneas":
+                st.line_chart(df_plot[eje_y])
+            else:
+                st.area_chart(df_plot[eje_y])
+
+    # --- Tabla ---
     st.divider()
-    st.subheader("📈 Visualización de Datos")
-    
-    # Elegir tipo de gráfico
-    tipo_grafico = st.radio(
-        "Selecciona el tipo de gráfico:",
-        ["Barras", "Líneas", "Área"],
-        horizontal=True
-    )
-
-    # Identificar columnas numéricas y de texto
-    numeric_cols = [c for c in df_view.columns if str(df_view[c].dtype) in ("int64", "float64", "int32", "float32")]
-    
-    if numeric_cols:
-        c1, c2, c3 = st.columns([2, 2, 1])
-        with c1:
-            num_col = st.selectbox("Eje Y (Valor numérico)", numeric_cols)
-        with c2:
-            label_cols = [c for c in df_view.columns if df_view[c].dtype == object]
-            label_col = st.selectbox("Eje X (Categoría)", ["(índice)"] + label_cols)
-        with c3:
-            top_n = st.number_input("Top N", min_value=1, max_value=len(df_view), value=min(15, len(df_view)))
-
-        # Preparar datos para graficar
-        plot_df = df_view.sort_values(num_col, ascending=False).head(top_n)
-        
-        if label_col != "(índice)":
-            plot_df = plot_df.set_index(label_col)
-        
-        # Mostrar el gráfico seleccionado
-        if tipo_grafico == "Barras":
-            st.bar_chart(plot_df[num_col])
-        elif tipo_grafico == "Líneas":
-            st.line_chart(plot_df[num_col])
-        elif tipo_grafico == "Área":
-            st.area_chart(plot_df[num_col])
-    else:
-        st.warning("No se detectaron columnas numéricas automáticas. Revisa el tipo de datos en 'preparar_datos'.")
-
-    # --- SECCIÓN 3: TABLA DE DATOS ---
-    st.divider()
-    st.subheader("🧾 Vista previa de la tabla")
+    st.subheader("🧾 Vista de datos")
     st.dataframe(df_view, use_container_width=True)
-
-    # Opción para descargar los datos filtrados
-    csv = df_view.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Descargar datos filtrados como CSV",
-        data=csv,
-        file_name='datos_chile.csv',
-        mime='text/csv',
-    )
+else:
+    st.warning("👈 Haz clic en el botón de la izquierda para cargar los datos.")
