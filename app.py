@@ -7,19 +7,10 @@ from analysis import preparar_datos
 
 DEFAULT_RESOURCE_ID = "2c44d782-3365-44e3-aefb-2c8b8363a1bc"
 
-# 1. FUNCIÓN CON CACHÉ
-# Esto guarda el resultado en el disco/memoria RAM. 
-# Si usas el mismo ID y Límite, no vuelve a descargar nada de la API.
-@st.cache_data(show_spinner="Consultando API de datos.gob.cl...")
-def cargar_y_procesar(res_id, lim):
-    raw_df = obtener_datos(resource_id=res_id, limit=lim)
-    processed_df = preparar_datos(raw_df)
-    return processed_df
-
 st.set_page_config(page_title="DataViz - datos.gob.cl", layout="wide")
-st.title("📊 DataViz con Caché y Persistencia")
+st.title("📊 DataViz - Conexión Directa")
 
-# 2. INICIALIZAR SESSION STATE
+# 1. INICIALIZAR SESSION STATE (Fundamental para que no se borre el gráfico)
 if 'df' not in st.session_state:
     st.session_state.df = None
 
@@ -28,22 +19,23 @@ with st.sidebar:
     resource_id = st.text_input("resource_id (UUID)", value=DEFAULT_RESOURCE_ID)
     limit = st.number_input("Límite de registros", min_value=10, value=1000)
     
-    if st.button("Cargar / Actualizar datos", use_container_width=True):
+    # Al quitar el caché, la descarga ocurre CADA VEZ que presionas este botón
+    if st.button("Cargar datos ahora", use_container_width=True):
         try:
-            # Llamamos a la función con caché
-            df_result = cargar_y_procesar(resource_id.strip(), int(limit))
-            st.session_state.df = df_result
-            st.success("¡Datos listos!")
+            with st.spinner("Descargando datos en tiempo real..."):
+                raw_data = obtener_datos(resource_id=resource_id.strip(), limit=int(limit))
+                st.session_state.df = preparar_datos(raw_data)
+                st.success("¡Datos actualizados!")
         except Exception as e:
             st.error(f"Error: {e}")
 
-st.info("📌 El resource_id está precargado. Gracias al Caché, si cambias de gráfico no habrá esperas.")
+st.info("📌 Los datos se descargarán directamente desde la API cada vez que presiones el botón.")
 
-# 3. RENDERIZADO DE LA INTERFAZ
+# 2. RENDERIZADO (Solo si hay datos en la sesión)
 if st.session_state.df is not None:
     df = st.session_state.df
 
-    # --- Filtros Dinámicos ---
+    # --- Filtros ---
     st.subheader("🔎 Filtros")
     col_to_filter = st.selectbox("Columna para filtrar:", ["(Sin filtro)"] + list(df.columns))
     
@@ -54,41 +46,42 @@ if st.session_state.df is not None:
         if seleccion:
             df_view = df[df[col_to_filter].astype(str).isin(seleccion)]
 
-    # --- Gráficos (Ya no se borran al cambiar) ---
+    # --- Gráficos (Persistentes gracias al Session State) ---
     st.divider()
-    col_chart_1, col_chart_2 = st.columns([1, 3])
+    st.subheader("📈 Visualización")
     
-    with col_chart_1:
-        st.subheader("📈 Ajustes")
-        tipo = st.radio("Tipo de gráfico:", ["Barras", "Líneas", "Área"])
-        
-        num_cols = df_view.select_dtypes(include=['number']).columns.tolist()
-        cat_cols = df_view.select_dtypes(include=['object']).columns.tolist()
+    # Cambiar esto NO activará una nueva descarga de datos
+    tipo = st.radio("Tipo de gráfico:", ["Barras", "Líneas", "Área"], horizontal=True)
 
-        if num_cols:
+    num_cols = df_view.select_dtypes(include=['number']).columns.tolist()
+    cat_cols = df_view.select_dtypes(include=['object']).columns.tolist()
+
+    if num_cols:
+        c1, c2, c3 = st.columns([2, 2, 1])
+        with c1:
             eje_y = st.selectbox("Eje Y (Numérico):", num_cols)
+        with c2:
             eje_x = st.selectbox("Eje X (Categoría):", ["(Índice)"] + cat_cols)
+        with c3:
             top_n = st.slider("Top N:", 5, 100, 20)
-        else:
-            st.warning("No hay columnas numéricas.")
-            eje_y = None
+        
+        # Preparar dataframe para el gráfico
+        df_plot = df_view.nlargest(top_n, eje_y)
+        if eje_x != "(Índice)":
+            df_plot = df_plot.set_index(eje_x)
 
-    with col_chart_2:
-        if eje_y:
-            df_plot = df_view.nlargest(top_n, eje_y)
-            if eje_x != "(Índice)":
-                df_plot = df_plot.set_index(eje_x)
-            
-            if tipo == "Barras":
-                st.bar_chart(df_plot[eje_y])
-            elif tipo == "Líneas":
-                st.line_chart(df_plot[eje_y])
-            else:
-                st.area_chart(df_plot[eje_y])
+        if tipo == "Barras":
+            st.bar_chart(df_plot[eje_y])
+        elif tipo == "Líneas":
+            st.line_chart(df_plot[eje_y])
+        else:
+            st.area_chart(df_plot[eje_y])
+    else:
+        st.warning("No se encontraron columnas numéricas para graficar.")
 
     # --- Tabla ---
     st.divider()
     st.subheader("🧾 Vista de datos")
     st.dataframe(df_view, use_container_width=True)
 else:
-    st.warning("👈 Haz clic en el botón de la izquierda para cargar los datos.")
+    st.warning("👈 Haz clic en 'Cargar datos ahora' para empezar.")
