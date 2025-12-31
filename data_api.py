@@ -45,3 +45,4 @@ def obtener_datos(resource_id: str, limit: int = 1000) -> pd.DataFrame:
         )
 
     return pd.DataFrame(records)
+
