@@ -1,86 +1,74 @@
 import streamlit as st
-import pandas as pd
+import matplotlib.pyplot as plt
 
-# Importación de tus módulos locales
 from data_api import obtener_datos
 from analysis import preparar_datos
 
 DEFAULT_RESOURCE_ID = "2c44d782-3365-44e3-aefb-2c8b8363a1bc"
 
-# 1. Configuración de la página
 st.set_page_config(page_title="DataViz - datos.gob.cl", layout="wide")
 st.title("📊 DataViz con datos.gob.cl (API REST + Streamlit)")
+st.write("Consume datos desde **datos.gob.cl** vía **API GET (CKAN DataStore)**, analiza con pandas y visualiza con matplotlib.")
 
-# 2. Inicialización de sesión (Evita que los datos se borren al cambiar de gráfico)
-if 'df' not in st.session_state:
-    st.session_state.df = None
-
-# 3. Sidebar (Barra Lateral)
 with st.sidebar:
     st.header("🔧 Configuración")
     resource_id = st.text_input(
-        "resource_id (UUID del recurso)",
+        "resource_id (UUID del recurso con DataStore)",
         value=DEFAULT_RESOURCE_ID,
-        help="El ID se encuentra en la URL del recurso en datos.gob.cl",
+        help="Este valor viene precargado con un recurso público de datos.gob.cl. Puedes reemplazarlo por otro resource_id.",
     )
-    limit = st.number_input("Límite de registros", min_value=10, value=1000)
-    
-    # Botón de carga: Guarda los datos en session_state
-    if st.button("Cargar datos", use_container_width=True):
-        try:
-            with st.spinner("Descargando..."):
-                df_raw = obtener_datos(resource_id=resource_id.strip(), limit=int(limit))
-                st.session_state.df = preparar_datos(df_raw)
-                st.success("¡Datos cargados!")
-        except Exception as e:
-            st.error(f"Error: {e}")
+    limit = st.number_input("Límite de registros", min_value=10, max_value=50000, value=1000, step=10)
+    load_btn = st.button("Cargar datos")
 
-# 4. Mensaje informativo (st.info)
-st.info("📌 El resource_id está precargado. Puedes cambiarlo por cualquier otro dataset de la plataforma que tenga DataStore habilitado.")
+st.info("📌 El resource_id está precargado con un recurso de **datos.gob.cl**. Puedes cambiarlo si usas otro dataset con DataStore habilitado.")
 
-# 5. Visualización de contenido
-if st.session_state.df is not None:
-    df = st.session_state.df
+if load_btn:
+    if not resource_id.strip():
+        st.error("Ingresa un resource_id válido.")
+        st.stop()
 
-    # --- Filtros ---
-    st.subheader("🔎 Filtros")
-    col_filter = st.selectbox("Filtrar por columna:", ["(Sin filtro)"] + list(df.columns))
-    
+    try:
+        df = obtener_datos(resource_id=resource_id.strip(), limit=int(limit))
+        df = preparar_datos(df)
+    except Exception as e:
+        st.error(f"No se pudieron cargar los datos: {e}")
+        st.stop()
+
+    st.success(f"Datos cargados: {len(df):,} registros | {len(df.columns)} columnas")
+
+    st.subheader("🔎 Exploración interactiva")
+    col_filter = st.selectbox("Selecciona una columna para filtrar (opcional)", ["(sin filtro)"] + list(df.columns))
+
     df_view = df
-    if col_filter != "(Sin filtro)":
+    if col_filter != "(sin filtro)":
         unique_vals = df[col_filter].dropna().unique()
-        chosen = st.multiselect(f"Selecciona valores de {col_filter}:", options=sorted(unique_vals.astype(str)))
-        if chosen:
-            df_view = df[df[col_filter].astype(str).isin(chosen)]
-
-    # --- Gráficos Interactivos ---
-    st.divider()
-    st.subheader("📈 Visualización")
-    
-    # El uso de session_state permite que cambiar este radio NO borre los datos
-    tipo = st.radio("Selecciona tipo de gráfico:", ["Barras", "Líneas", "Área"], horizontal=True)
-
-    numeric_cols = df_view.select_dtypes(include=['number']).columns.tolist()
-    
-    if numeric_cols:
-        col_y = st.selectbox("Columna numérica (Eje Y):", numeric_cols)
-        top_n = st.slider("Mostrar Top N registros:", 5, 50, 15)
-        
-        # Preparar datos para el gráfico
-        plot_df = df_view.nlargest(top_n, col_y)
-
-        # Renderizado de gráficos nativos de Streamlit
-        if tipo == "Barras":
-            st.bar_chart(plot_df[col_y])
-        elif tipo == "Líneas":
-            st.line_chart(plot_df[col_y])
+        if len(unique_vals) <= 200:
+            chosen = st.multiselect(f"Filtrar {col_filter} por:", options=sorted(unique_vals.astype(str)))
+            if chosen:
+                df_view = df[df[col_filter].astype(str).isin(chosen)]
         else:
-            st.area_chart(plot_df[col_y])
-    else:
-        st.warning("No hay columnas numéricas para graficar.")
+            st.warning("Demasiados valores únicos para filtro por lista. Usa búsqueda en la tabla.")
 
-    # --- Tabla Final ---
-    st.subheader("🧾 Vista de datos")
+    st.subheader("📈 Gráfico (elige columna numérica)")
+    numeric_cols = [c for c in df_view.columns if str(df_view[c].dtype) in ("int64", "float64", "int32", "float32")]
+    if numeric_cols:
+        num_col = st.selectbox("Columna numérica", numeric_cols)
+        top_n = st.slider("Top N (por valor)", 5, 50, 10)
+
+        label_cols = [c for c in df_view.columns if df_view[c].dtype == object]
+        label_col = st.selectbox("Columna etiqueta (opcional)", ["(índice)"] + label_cols)
+
+        plot_df = df_view.sort_values(num_col, ascending=False).head(top_n)
+
+        fig, ax = plt.subplots()
+        y_labels = plot_df.index.astype(str) if label_col == "(índice)" else plot_df[label_col].astype(str)
+        ax.barh(y_labels, plot_df[num_col])
+        ax.invert_yaxis()
+        ax.set_xlabel(num_col)
+        ax.set_ylabel(label_col if label_col != "(índice)" else "Índice")
+        st.pyplot(fig)
+    else:
+        st.warning("No se detectaron columnas numéricas en el dataset cargado para graficar.")
+
+    st.subheader("🧾 Tabla de datos")
     st.dataframe(df_view, use_container_width=True)
-else:
-    st.warning("👈 Haz clic en 'Cargar datos' en el panel izquierdo para comenzar.")
